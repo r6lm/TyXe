@@ -1,0 +1,799 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
+# NOTE: currently I only perform validations loops at the end of each epoch is early stopping is enabled.
+
+
+# In[ ]:
+
+
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
+
+import argparse
+import copy
+import functools
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from tqdm import tqdm
+from collections import defaultdict
+
+import torch
+import torch.nn as nn
+import torch.utils.data as data
+from torch.utils.data import DataLoader, random_split
+
+# import torchvision.transforms as tf
+# from torchvision.datasets import MNIST, CIFAR10, CIFAR100
+
+import pyro
+import pyro.distributions as dist
+
+import tyxe
+
+from MF.model import get_model
+from dataset.ASMGMovieLens import ASMGMovieLens
+from utils.save import get_version, save_as_json
+from pytorchtools import EarlyStopping
+
+
+# In[ ]:
+
+
+
+# tyxe global parameters
+ROOT = os.environ.get("DATASETS_PATH", "./data")
+USE_CUDA = torch.cuda.is_available()
+DEVICE = torch.device("cuda") if USE_CUDA else torch.device("cpu")
+C10_MEAN = (0.49139968, 0.48215841, 0.44653091)
+C10_SD = (0.24703223, 0.24348513, 0.26158784)
+inference = "mean-field"
+
+# script functions
+def validation_loop(model, dataloader, model_samples):
+    """Returns error and likelihood as cpu floats.
+
+    Parameters
+    ----------
+    model : BNN
+    dataloader 
+    model_samples : int
+        number of samples of model parameters for the evaluation.
+    
+    """    
+    err, log_likelihood = torch.tensor([
+        model.evaluate(x.to(DEVICE), y.to(DEVICE), 
+        num_predictions=model_samples
+            ) for x, y in dataloader]
+        ).sum(dim = 0)
+    mean_nll = - log_likelihood.item() / len(dataloader.sampler)
+    mean_error =  err.item() / len(dataloader.sampler)
+
+    return mean_nll, mean_error
+
+def fit_aux(train_loader, n_epochs, 
+    early_stopper, **kwargs):
+
+    # # veryfy callback_type
+    # implemented_callbacks = ("reporting", "early-stopping")
+    # assert callback_type in implemented_callbacks, (
+    #     f"`callback_type` must be in {implemented_callbacks}")
+
+    elbos = []
+    postfix_dict = {"Epoch Loss": np.Inf}
+    pbar = tqdm(total=n_epochs, 
+    unit="Epochs", postfix=f"Epoch Loss: {postfix_dict['Epoch Loss']}")
+
+    # non-enclosed function
+    def reporting_callback(model, _ii, e):
+        """
+        Used at the end of each epoch on the TyXe `fit` method.
+        
+        model: BNN
+        _ii: epoch number
+        e: epoch loss
+        """
+        mean_loss = e / len(train_loader.sampler) / train_loader.batch_size
+        elbos.append(mean_loss)
+        pbar.update()
+        postfix_dict['Epoch Loss'] = f"{mean_loss:.5f}"
+        pbar.set_postfix(postfix_dict)
+
+    if early_stopper is not None:
+        test_errors = []
+        test_nll = []
+
+        def early_stopping_callback(model, _ii, e):
+            """Calls `reporting_callback` and adds validation loop for 
+            early-stopping.
+
+            Parameters
+            ----------
+            model: BNN
+            _ii: epoch number
+            e: epoch loss
+            """           
+
+            reporting_callback(model, _ii, e)
+
+            # include this snippet in callback
+            mean_nll, mean_error =  validation_loop(
+                model, kwargs["test_dataloader"], kwargs["test_samples"])
+            test_errors.append(mean_error)
+            test_nll.append(mean_nll)
+            
+            # update pbar with validation results
+            postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+            pbar.set_postfix(postfix_dict)
+
+            early_stopper(mean_nll, model)
+
+            if early_stopper.early_stop:
+                print(f"early-stopped: {early_stopper.early_stop}")
+                return True
+
+        return (elbos, postfix_dict, pbar, early_stopping_callback, 
+            test_errors, test_nll)
+            
+    else:
+        return elbos,postfix_dict,pbar,reporting_callback
+
+def get_bnn(model_params, inference, device=DEVICE):
+    """Builds a BNN.
+
+    Parameters
+    ----------
+    model_params : dict
+    inference : str
+    device : str, optional
+        by default DEVICE
+
+    Returns
+    -------
+    tyxe.VariationalBNN
+    """    
+    net = get_model(model_params).to(device)
+    obs = tyxe.likelihoods.Bernoulli(-1, event_dim=1, logit_predictions=False)
+
+    if inference == "mean-field":
+        prior = tyxe.priors.IIDPrior(dist.Normal(torch.tensor(
+            0., device=device), torch.tensor(1., device=device)),
+            expose_all=True)
+        guide_factory = functools.partial(
+            tyxe.guides.AutoNormal, init_scale=1e-4,
+            init_loc_fn=tyxe.guides.PretrainedInitializer.from_net(net))
+    elif inference == "ml":
+        prior = tyxe.priors.IIDPrior(dist.Normal(0, 1), expose_all=False, hide_all=True)
+        guide_factory = None
+
+    return tyxe.VariationalBNN(net, prior, obs, guide_factory)
+
+
+def load_bnn(model_params, inference, train_params, path):
+    """Loads a BNN. Needs to call fit to instantiate a guide to then 
+    load the weights.
+
+    Parameters
+    ----------
+    model_params : dict   
+    inference : str  
+    train_params : dict  
+    path : str or Path
+        for the state dict.
+
+    Returns
+    -------
+    tyxe.VariationalBNN
+    """    
+    
+    # get bnn
+    new_bnn = get_bnn(model_params, inference)
+
+    # load data and create a single mini-batch dataloader
+    train_data = ASMGMovieLens(train_params["input_path"], 1)
+    single_mbatch_data = random_split(train_data, [model_params[
+        "batch_size"], len(train_data) - model_params["batch_size"]])[0]
+    singleton_loader = DataLoader(
+        single_mbatch_data, batch_size=model_params["batch_size"])
+    new_bnn.likelihood.dataset_size = model_params["batch_size"]
+
+    # define optimizer
+    optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
+    "weight_decay": model_params["l2_regularization_constant"]})
+
+    # instance guide
+    with tyxe.poutine.local_reparameterization():
+        new_bnn.fit(singleton_loader, optim, 1, 
+        device=DEVICE)
+    
+    # load BNN
+    new_bnn.load_state_dict(torch.load(path))
+
+    # prior is assumed to be the approximate posterior in case we
+    # are using mean field inference and prior update
+    if inference == "mean-field" and model_params["update_prior"]:
+        new_bnn.update_prior(tyxe.priors.DictPrior(
+            new_bnn.net_guide.get_detached_distributions(
+            tyxe.util.pyro_sample_sites(new_bnn.net))))
+    return new_bnn
+
+
+# In[ ]:
+
+
+DEVICE
+
+
+# # Parameters
+
+# In[ ]:
+
+
+# control flow parameters
+test_offline = False
+test_online = False
+plot_perf = True
+
+train_params = dict(
+    input_path="../../../increcs/data/preprocessed/ml_processed.csv",
+    val_start_period=11,
+    val_end_period= 24,  #12
+    test_start_period=25, # change to None if running as validation
+    test_end_period=31,  # 25,
+    train_window=10,
+    seed=6202,
+    model_filename='first_mf',
+    offline_path=None,  # "../model/MF/mean-field/version_01/state_dict.pt",
+    online_end_of_validation_path = None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
+    # save_model=False, \todo
+    save_result=True
+)
+
+model_params = dict(
+    alias="MF",
+    n_users=43183,
+    n_items=51149,
+    n_latents=8,
+    l2_regularization_constant=1e-6,
+    learning_rate=1e-3,  # 1e-2 is the ASMG MF implementation
+    batch_size=1024,
+    n_epochs_offline=30, # 11,
+    n_epochs_online=30,  # 19,
+    early_stopping_offline=True,
+    early_stopping_online=True, # train_params["test_start_period"] is None,
+    update_prior=False,
+    test_samples=40,
+)
+
+# train_batch_size = 1024
+# test_batch_size = 1000
+train_params["model_checkpoint_dir"] = f'./../model/{model_params["alias"]}'
+
+# adapt function to TyXe experiment 
+get_version = functools.partial(get_version, logdir=inference)
+experiment_params = {**train_params, **model_params}
+params = argparse.Namespace(**experiment_params)
+
+
+# In[ ]:
+
+
+# get version
+version = get_version(train_params["model_checkpoint_dir"])
+
+# make checkpoint dir
+model_checkpoint_subdir = train_params["model_checkpoint_dir"] + (
+    f'/{inference}/{version}')
+    
+if not os.path.exists(model_checkpoint_subdir):
+    os.makedirs(model_checkpoint_subdir)
+
+
+# # Offline training
+
+# In[ ]:
+
+
+# if there is no saved premodel
+if train_params["offline_path"] is None:
+    offline_checkpoint_path = f"{model_checkpoint_subdir}/offline_state_dict.pt"
+    early_stopping = EarlyStopping(
+        delta=1e-4, path=offline_checkpoint_path) if \
+            model_params["early_stopping_offline"] else None
+    bnn = get_bnn(model_params, inference)
+    # ensure reproducibility
+    torch.manual_seed(train_params["seed"])
+
+    # define periods
+    train_start_period = train_params["val_start_period"] - train_params["train_window"]
+    train_end_period = train_params["val_start_period"] - 1
+    val_period = train_params["val_start_period"]
+    print(
+        "OFFLINE TRAINING",
+        f"train period: {train_start_period}-{train_end_period}", 
+        f"validation period: {val_period}", sep="\n")
+
+    train_data = ASMGMovieLens(
+            train_params["input_path"], train_start_period, train_end_period)
+    train_loader = DataLoader(
+            train_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count(), pin_memory=USE_CUDA)
+
+    test_data = ASMGMovieLens(train_params["input_path"], val_period)
+    test_loader = DataLoader(
+        test_data, batch_size=model_params["batch_size"], shuffle=False,
+        num_workers=os.cpu_count())
+
+    # test_errors = []
+    # test_log_likelihoods = []
+
+    # initialize fit auxiliary variables
+    n_epochs_offline = model_params["n_epochs_offline"] 
+
+    if early_stopping is None:
+        elbos,postfix_dict, pbar, callback = fit_aux(
+            train_loader, n_epochs_offline, None)
+    else:
+        elbos,postfix_dict, pbar, callback, test_errors, test_nlls = fit_aux(
+            train_loader, n_epochs_offline, early_stopping, 
+            test_dataloader=test_loader, test_samples=model_params["test_samples"])
+
+    bnn.likelihood.dataset_size = len(train_loader.sampler)
+
+    optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
+        "weight_decay": model_params["l2_regularization_constant"]})
+
+    with tyxe.poutine.local_reparameterization():
+        bnn.fit(train_loader, optim, n_epochs_offline, 
+            device=DEVICE, callback=callback)
+
+
+    # if early stopping is None get validation performance, otherwise it is
+    # calculated on callback
+    if early_stopping is None:
+        mean_nll = validation_loop(bnn, test_loader, model_params["test_samples"])[0]
+        postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+        pbar.set_postfix(postfix_dict)
+
+    pbar.close()
+
+    # counter starts from 1
+    print(f"finished after {pbar.last_print_n} epochs")
+
+    # update prior
+    if (inference == "mean-field") and params.update_prior:
+        bnn.update_prior(tyxe.priors.DictPrior(bnn.net_guide.get_detached_distributions(
+            tyxe.util.pyro_sample_sites(bnn.net))))
+
+
+    if early_stopping is None:
+        # save model 
+        torch.save(bnn.state_dict(), offline_checkpoint_path)
+
+    else:
+        # load best model
+        bnn.load_state_dict(torch.load(early_stopping.path))
+
+    # save json 
+    json_path = f"{model_checkpoint_subdir}/params"
+    save_as_json(experiment_params, json_path)
+
+else:
+    offline_checkpoint_path = params.offline_path
+    bnn = load_bnn(model_params, inference, train_params, params.offline_path)
+
+
+# In[ ]:
+
+
+if test_offline:
+    # unit test for reproducibility of base model
+    torch.manual_seed(train_params["seed"])
+    _, test_log_likelihood = torch.tensor([
+        bnn.evaluate(x.to(DEVICE), y.to(DEVICE), 
+        num_predictions=model_params["test_samples"]
+            ) for x, y in test_loader]
+        ).sum(dim = 0)
+    test_mean_nll = - test_log_likelihood.item() / len(test_loader.sampler)
+    print(f"{test_mean_nll:.5f}")
+
+
+# In[ ]:
+
+
+if test_offline:
+
+    # build new BNN
+    new_bnn = load_bnn(model_params, inference, train_params, offline_checkpoint_path)
+
+    torch.manual_seed(train_params["seed"]) # if not set breaks
+    new_err, new_log_likelihood = torch.tensor([
+        new_bnn.evaluate(x.to(DEVICE), y.to(DEVICE), 
+        num_predictions=model_params["test_samples"]
+            ) for x, y in test_loader]
+        ).sum(dim = 0)
+    new_mean_nll = - new_log_likelihood.item() / len(test_loader.sampler)
+    print(f"{new_mean_nll:.5f}")
+    assert new_mean_nll == test_mean_nll
+
+
+# In[ ]:
+
+
+if plot_perf:
+    
+    # train losses
+    plt.figure(figsize=(9, 6))
+    plt.plot(elbos)
+    plt.xlabel("Epoch")
+    plt.ylabel("ELBO loss")
+    plt.title("Raw ELBO loss")
+    plt.show()
+
+    if early_stopping is not None:
+        
+        # test errors
+        plt.figure(figsize=(9, 6))
+        plt.plot(test_errors)
+        plt.xlabel("epoch")
+        plt.ylabel("test_error")
+        plt.show()
+
+        # test losses
+        plt.figure(figsize=(9, 6))
+        plt.plot(test_nlls)
+        plt.xlabel("epoch")
+        plt.ylabel("NLL")
+
+        print(test_nlls[-1])
+        print(np.array(test_nlls).min(), np.array(test_nlls).argmin())
+
+
+# # Online training
+
+# In[ ]:
+
+
+if params.online_end_of_validation_path is None:
+
+    # ensure reproducibility
+    torch.manual_seed(train_params["seed"])
+
+    val_periods = range(
+        # starts at `val_start_period + 1` because the first validation is 
+        # used for offline training
+        train_params["val_start_period"] + 1, train_params["val_end_period"] + 1)
+
+
+    n_epochs_online = model_params["n_epochs_online"] 
+
+    # initialize performance containers
+    val_losses = []
+    val_epochs = [] if early_stopping is not None else None
+    val_dict = defaultdict(lambda: [])
+
+    # same checkpoint path used along the online training
+    online_checkpoint_path = f"{model_checkpoint_subdir}/online_state_dict.pt"
+
+    for i, val_period in enumerate(val_periods, 1):
+
+        # find the good number of epochs
+        early_stopping = EarlyStopping(
+            delta=1e-4, path=online_checkpoint_path) if \
+                model_params["early_stopping_online"] else None
+
+        # update periods
+        train_period = val_period - 1 
+        print(
+            f"train period: {train_period}", 
+            f"test period: {val_period}", sep="\n")
+        
+        # set dataloaders
+        train_data = ASMGMovieLens(
+            train_params["input_path"], train_period)
+        train_loader = DataLoader(
+            train_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+        test_data = ASMGMovieLens(
+            train_params["input_path"], val_period)
+        test_loader = DataLoader(
+            test_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+
+        # initialize fit auxiliary variables
+        bnn.likelihood.dataset_size = len(train_loader.sampler)
+        
+
+
+        if early_stopping is None:
+            elbos,postfix_dict, pbar, callback = fit_aux(
+                train_loader, n_epochs_online, None)
+        else:
+            # find the optimal amount of epochs if early stopping is enabled
+            elbos,postfix_dict, pbar, callback, val_errors, val_nlls = fit_aux(
+                train_loader, n_epochs_online, early_stopping, 
+                test_dataloader=test_loader, test_samples=model_params["test_samples"])
+
+        bnn.likelihood.dataset_size = len(train_loader.sampler)
+
+        optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
+            "weight_decay": model_params["l2_regularization_constant"]})
+
+        with tyxe.poutine.local_reparameterization():
+            bnn.fit(train_loader, optim, n_epochs_online, 
+                device=DEVICE, callback=callback)
+
+        # for epoch in range(n_epochs_online):
+
+        #     with tyxe.poutine.local_reparameterization():
+        #         bnn.fit(train_loader, optim, 1, 
+        #             device=DEVICE, callback=callback)
+
+        #     err, log_likelihood = torch.tensor([
+        #         bnn.evaluate(x.to(DEVICE), y.to(DEVICE), 
+        #         num_predictions=model_params["test_samples"]
+        #             ) for x, y in test_loader]
+        #         ).sum(dim = 0)
+        #     mean_error =  err.item() / len(test_loader.sampler)
+        #     val_dict[f"{val_period}-test_err"].append(mean_error)
+        #     mean_nll = - log_likelihood.item() / len(test_loader.sampler)
+        #     val_dict[f"{val_period}-test_nll"].append(mean_nll)
+        #     early_stopping(mean_nll, bnn)
+
+        #     # update pbar with validation results
+        #     postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+        #     pbar.set_postfix(postfix_dict)
+
+        #     if early_stopping.early_stop:
+        #         break
+
+
+        # if early stopping is None get validation performance, otherwise it is
+        # calculated on callback
+        if early_stopping is None:
+            mean_nll = validation_loop(bnn, test_loader, model_params["test_samples"])[0]
+            postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+            pbar.set_postfix(postfix_dict)
+            val_losses.append(mean_nll)
+        
+        else:
+            val_losses.append(early_stopping.best_score)
+            val_epochs.append(len(val_nlls) - early_stopping.patience)
+            val_dict[f"{val_period}-test_err"] = val_errors
+            val_dict[f"{val_period}-test_nll"] = val_nlls
+
+        pbar.close()
+        print(f"finished after {pbar.last_print_n} epochs")
+
+        # val_losses.append(early_stopping.best_score)
+
+        if (inference == "mean-field") and params.update_prior:
+            bnn.update_prior(tyxe.priors.DictPrior(bnn.net_guide.get_detached_distributions(
+                tyxe.util.pyro_sample_sites(bnn.net))))
+        
+        # if early stopping is used, fallback to best model for next validation 
+        # period
+        if early_stopping is not None:
+            # load best model
+            bnn.load_state_dict(torch.load(early_stopping.path))
+
+
+    # at the end of all validation periods, save the latest model in case 
+    # not done by early stopping
+    if early_stopping is None:
+        # save model 
+        torch.save(bnn.state_dict(), online_checkpoint_path)
+
+else: 
+    bnn = load_bnn(model_params, inference, train_params, params.online_end_of_validation_path)
+
+
+# In[ ]:
+
+
+if test_online:
+
+    new_bnn = load_bnn(model_params, inference, train_params, offline_checkpoint_path)
+
+    # ensure reproducibility
+    torch.manual_seed(train_params["seed"])
+
+    val_periods = range(
+    # starts at `val_start_period + 1` because the first validation is 
+    # used for offline training
+    train_params["val_start_period"] + 1, train_params["val_end_period"] + 1)
+
+
+    n_epochs_online = model_params["n_epochs_online"] 
+
+    # initialize performance containers
+    val_losses = []
+    val_dict = defaultdict(lambda: [])
+
+    # same checkpoint path used along the online training
+    online_checkpoint_path = f"{model_checkpoint_subdir}/test-reproducibility_online_state_dict.pt"
+
+    for i, val_period in enumerate(val_periods, 1):
+
+        # find the good number of epochs
+        early_stopping = EarlyStopping(
+            delta=1e-4, path=online_checkpoint_path) if \
+                model_params["early_stopping_online"] else None
+
+        # update periods
+        train_period = val_period - 1 
+        print(
+            f"train period: {train_period}", 
+            f"test period: {val_period}", sep="\n")
+        
+        # set dataloaders
+        train_data = ASMGMovieLens(
+            train_params["input_path"], train_period)
+        train_loader = DataLoader(
+            train_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+        test_data = ASMGMovieLens(
+            train_params["input_path"], val_period)
+        test_loader = DataLoader(
+            test_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+
+        # initialize fit auxiliary variables
+        new_bnn.likelihood.dataset_size = len(train_loader.sampler)
+
+
+        if early_stopping is None:
+            elbos,postfix_dict, pbar, callback = fit_aux(
+                train_loader, n_epochs_online, None)
+        else:
+            elbos,postfix_dict, pbar, callback, val_errors, val_nlls = fit_aux(
+                train_loader, n_epochs_online, early_stopping, 
+                test_dataloader=test_loader, test_samples=model_params["test_samples"])
+
+        new_bnn.likelihood.dataset_size = len(train_loader.sampler)
+
+        optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
+            "weight_decay": model_params["l2_regularization_constant"]})
+
+        with tyxe.poutine.local_reparameterization():
+            new_bnn.fit(train_loader, optim, n_epochs_online, 
+                device=DEVICE, callback=callback)
+
+
+        # if early stopping is None get validation performance, otherwise it is
+        # calculated on callback
+        if early_stopping is None:
+            mean_nll = validation_loop(new_bnn, test_loader, model_params["test_samples"])[0]
+            postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+            pbar.set_postfix(postfix_dict)
+            val_losses.append(mean_nll)
+        
+        else:
+            val_losses.append(early_stopping.best_score)
+            val_dict[f"{val_period}-test_err"] = val_errors
+            val_dict[f"{val_period}-test_nll"] = val_nlls
+
+        pbar.close()
+        print(f"finished after {pbar.last_print_n} epochs")
+
+        if (inference == "mean-field") and params.update_prior:
+            new_bnn.update_prior(tyxe.priors.DictPrior(new_bnn.net_guide.get_detached_distributions(
+                tyxe.util.pyro_sample_sites(new_bnn.net))))
+        
+        # if early stopping is used, fallback to best model for next validation 
+        # period
+        if early_stopping is not None:
+            # load best model
+            new_bnn.load_state_dict(torch.load(early_stopping.path))
+
+
+    # at the end of all validation periods, save the latest model in case 
+    # not done by early stopping
+    if early_stopping is None:
+        # save model 
+        torch.save(new_bnn.state_dict(), online_checkpoint_path)
+
+
+# # Online test
+
+# In[ ]:
+
+
+bnn = load_bnn(model_params, inference, train_params, 
+"../model/MF/mean-field/version_28/online_state_dict.pt")
+
+
+# In[ ]:
+
+
+if params.early_stopping_online:
+    # select the number of epochs for online test from validation
+    n_epochs_online = int(pd.Series(val_epochs).median())
+    print(f"optimal online epochs: {n_epochs_online}")
+
+
+# In[ ]:
+
+
+
+if train_params["test_start_period"] is not None:
+    test_periods = range(
+        train_params["test_start_period"], train_params["test_end_period"] + 1)
+else:
+    test_periods = []
+    print("skipped test cycle")
+
+
+
+test_dict = defaultdict(lambda: [])
+
+for i, test_period in enumerate(test_periods, 1):
+
+
+    # update periods
+    train_period = test_period - 1 
+    print(
+        f"train period: {train_period}", 
+        f"test period: {test_period}", sep="\n")
+    
+    train_data = ASMGMovieLens(
+            train_params["input_path"], train_period)
+    train_loader = DataLoader(
+            train_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+    test_data = ASMGMovieLens(
+            train_params["input_path"], test_period)
+    test_loader = DataLoader(
+            test_data, batch_size=model_params["batch_size"], shuffle=True,
+            num_workers=os.cpu_count())
+
+    elbos,postfix_dict, pbar, callback = fit_aux(
+                train_loader, n_epochs_online, None)
+
+    bnn.likelihood.dataset_size = len(train_loader.sampler)
+    optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
+    "weight_decay": model_params["l2_regularization_constant"]})
+
+
+    # for epoch in range(n_epochs_online):
+
+    with tyxe.poutine.local_reparameterization():
+        bnn.fit(train_loader, optim, n_epochs_online, 
+            device=DEVICE, callback=callback)
+
+    mean_nll, mean_error = validation_loop(
+        bnn, test_loader, model_params["test_samples"])
+    postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+    pbar.set_postfix(postfix_dict)
+
+    pbar.close()
+
+    test_dict["period"].append(test_period)
+    test_dict["loss"].append(mean_nll)
+    test_dict["error"].append(mean_error)
+
+    if (inference == "mean-field") and params.update_prior:
+        bnn.update_prior(tyxe.priors.DictPrior(bnn.net_guide.get_detached_distributions(
+            tyxe.util.pyro_sample_sites(bnn.net))))
+
+
+# In[ ]:
+
+
+df_path = f"{model_checkpoint_subdir}/first_biu.csv"
+res_df = pd.DataFrame(test_dict)
+average_srs = res_df.mean()
+average_srs.at["period"] = "mean"
+print(average_srs)
+
+if train_params["save_result"]: 
+    pd.concat((res_df, average_srs.to_frame().T), axis=0, ignore_index=True
+    ).to_csv(df_path, index=False)
+    print(f"saved results csv at: {os.path.abspath(df_path)}")
+
