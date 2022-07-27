@@ -4,3 +4,8 @@ __pycache__/
 .idea/
 *.egg-info/
 docs/build/
+model
+img
+
+notebooks/data/mnist/MNIST/*
+notebooks/data/mnist/MNIST/*

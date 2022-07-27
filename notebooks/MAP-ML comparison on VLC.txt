@@ -1,0 +1,7 @@
+Mean Field -  avg: 7.13
+Error	Task 1	Task 2	Task 3	Task 4	Task 5
+	0.38%	29.77%	2.03%	2.11%	1.36%
+
+Maximum Likelihood - avg:  9.21
+Error	Task 1	Task 2	Task 3	Task 4	Task 5
+	0.05%	43.44%	0.48%	1.66%	0.45%
