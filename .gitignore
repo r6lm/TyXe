@@ -9,3 +9,4 @@ img
 
 notebooks/data/mnist/MNIST/*
 notebooks/data/mnist/MNIST/*
+.vscode/settings.json

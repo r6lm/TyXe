@@ -20,6 +20,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import gc
 
 from tqdm import tqdm
 from collections import defaultdict
@@ -41,6 +42,21 @@ from MF.model import get_model
 from dataset.ASMGMovieLens import ASMGMovieLens
 from utils.save import get_version, save_as_json
 from pytorchtools import EarlyStopping
+
+
+# In[ ]:
+
+
+# parameters to tune on Eddie
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--init-scale", default="1e-4", help="guide factory initial parameter scale")
+parser.add_argument(
+    "--seed", default="6202", help="random seed for reproducibility")
+# parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
+parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
+# parsed_args = parser.parse_args([])
+parsed_args
 
 
 # In[ ]:
@@ -144,7 +160,7 @@ def fit_aux(train_loader, n_epochs,
     else:
         return elbos,postfix_dict,pbar,reporting_callback
 
-def get_bnn(model_params, inference, device=DEVICE):
+def get_bnn(model_params, inference, device=DEVICE, prior=None):
     """Builds a BNN.
 
     Parameters
@@ -153,6 +169,8 @@ def get_bnn(model_params, inference, device=DEVICE):
     inference : str
     device : str, optional
         by default DEVICE
+    prior : tyxe.Prior, optional
+        If not given, the IID. Gaussian(0,1) is used.
 
     Returns
     -------
@@ -162,17 +180,22 @@ def get_bnn(model_params, inference, device=DEVICE):
     obs = tyxe.likelihoods.Bernoulli(-1, event_dim=1, logit_predictions=False)
 
     if inference == "mean-field":
-        prior = tyxe.priors.IIDPrior(dist.Normal(torch.tensor(
-            0., device=device), torch.tensor(1., device=device)),
-            expose_all=True)
+        
+        if prior is None:
+            prior_ = tyxe.priors.IIDPrior(dist.Normal(torch.tensor(
+                0., device=device), torch.tensor(1., device=device)),
+                expose_all=True)
+        else:
+            prior_ = prior
+        
         guide_factory = functools.partial(
-            tyxe.guides.AutoNormal, init_scale=1e-4,
+            tyxe.guides.AutoNormal, init_scale=model_params["guide_init_scale"],
             init_loc_fn=tyxe.guides.PretrainedInitializer.from_net(net))
     elif inference == "ml":
-        prior = tyxe.priors.IIDPrior(dist.Normal(0, 1), expose_all=False, hide_all=True)
+        prior_ = tyxe.priors.IIDPrior(dist.Normal(0, 1), expose_all=False, hide_all=True)
         guide_factory = None
 
-    return tyxe.VariationalBNN(net, prior, obs, guide_factory)
+    return tyxe.VariationalBNN(net, prior_, obs, guide_factory)
 
 
 def load_bnn(model_params, inference, train_params, path):
@@ -247,10 +270,10 @@ train_params = dict(
     test_start_period=25, # change to None if running as validation
     test_end_period=31,  # 25,
     train_window=10,
-    seed=6202,
+    seed=int(parsed_args.seed),
     model_filename='first_mf',
-    offline_path=None,  # "../model/MF/mean-field/version_01/state_dict.pt",
-    online_end_of_validation_path = None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
+    offline_path=None,#"../model/MF/mean-field/version_29/offline_state_dict.pt",
+    online_end_of_validation_path=None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
     # save_model=False, \todo
     save_result=True
 )
@@ -263,12 +286,14 @@ model_params = dict(
     l2_regularization_constant=1e-6,
     learning_rate=1e-3,  # 1e-2 is the ASMG MF implementation
     batch_size=1024,
-    n_epochs_offline=30, # 11,
-    n_epochs_online=30,  # 19,
+    n_epochs_offline=1,#30, # 11,
+    n_epochs_online=1,#100,  # 19,
     early_stopping_offline=True,
     early_stopping_online=True, # train_params["test_start_period"] is None,
-    update_prior=False,
+    update_prior=True,
+    random_init=True,
     test_samples=40,
+    guide_init_scale=float(parsed_args.init_scale)
 )
 
 # train_batch_size = 1024
@@ -279,6 +304,7 @@ train_params["model_checkpoint_dir"] = f'./../model/{model_params["alias"]}'
 get_version = functools.partial(get_version, logdir=inference)
 experiment_params = {**train_params, **model_params}
 params = argparse.Namespace(**experiment_params)
+params.guide_init_scale, params.seed
 
 
 # In[ ]:
@@ -293,6 +319,10 @@ model_checkpoint_subdir = train_params["model_checkpoint_dir"] + (
     
 if not os.path.exists(model_checkpoint_subdir):
     os.makedirs(model_checkpoint_subdir)
+    
+    # save json 
+    json_path = f"{model_checkpoint_subdir}/params"
+    save_as_json(experiment_params, json_path)
 
 
 # # Offline training
@@ -304,7 +334,7 @@ if not os.path.exists(model_checkpoint_subdir):
 if train_params["offline_path"] is None:
     offline_checkpoint_path = f"{model_checkpoint_subdir}/offline_state_dict.pt"
     early_stopping = EarlyStopping(
-        delta=1e-4, path=offline_checkpoint_path) if \
+        delta=1e-4, path=offline_checkpoint_path, trace_func=lambda x: None) if \
             model_params["early_stopping_offline"] else None
     bnn = get_bnn(model_params, inference)
     # ensure reproducibility
@@ -329,9 +359,6 @@ if train_params["offline_path"] is None:
     test_loader = DataLoader(
         test_data, batch_size=model_params["batch_size"], shuffle=False,
         num_workers=os.cpu_count())
-
-    # test_errors = []
-    # test_log_likelihoods = []
 
     # initialize fit auxiliary variables
     n_epochs_offline = model_params["n_epochs_offline"] 
@@ -380,13 +407,15 @@ if train_params["offline_path"] is None:
         # load best model
         bnn.load_state_dict(torch.load(early_stopping.path))
 
-    # save json 
-    json_path = f"{model_checkpoint_subdir}/params"
-    save_as_json(experiment_params, json_path)
-
 else:
     offline_checkpoint_path = params.offline_path
     bnn = load_bnn(model_params, inference, train_params, params.offline_path)
+
+
+# In[ ]:
+
+
+bnn.prior
 
 
 # In[ ]:
@@ -426,7 +455,27 @@ if test_offline:
 # In[ ]:
 
 
-if plot_perf:
+if params.save_result:
+
+    # save train performance statistics  
+    train_perf_path = f"{model_checkpoint_subdir}/train_perf.csv"
+    train_perf_dict = {"elbo": elbos}
+    if params.early_stopping_offline and (params.offline_path is None):
+        train_perf_dict.update({
+            "test_error": test_errors,
+            "test_nlls": test_nlls
+        })
+
+    train_perf_df = pd.DataFrame(train_perf_dict)
+    train_perf_df.index.set_names("epoch", inplace=True)
+    train_perf_df.to_csv(train_perf_path)
+    print(f"saving train performance statistics at: {os.path.abspath(train_perf_path)}")
+
+
+# In[ ]:
+
+
+if plot_perf and (params.offline_path is None):
     
     # train losses
     plt.figure(figsize=(9, 6))
@@ -475,7 +524,7 @@ if params.online_end_of_validation_path is None:
 
     # initialize performance containers
     val_losses = []
-    val_epochs = [] if early_stopping is not None else None
+    val_epochs = [] if params.early_stopping_online is not None else None
     val_dict = defaultdict(lambda: [])
 
     # same checkpoint path used along the online training
@@ -483,9 +532,22 @@ if params.online_end_of_validation_path is None:
 
     for i, val_period in enumerate(val_periods, 1):
 
+        # initialize variational distribution randomly
+        if params.random_init:
+            new_bnn = get_bnn(model_params,inference)
+
+            # use last model approx. posterior as prior 
+            if params.update_prior:
+                new_bnn.update_prior(tyxe.priors.DictPrior(
+                    bnn.net_guide.get_detached_distributions(
+                        tyxe.util.pyro_sample_sites(bnn.net))))
+                        
+            bnn = new_bnn
+            gc.collect()
+
         # find the good number of epochs
         early_stopping = EarlyStopping(
-            delta=1e-4, path=online_checkpoint_path) if \
+            delta=1e-4, path=online_checkpoint_path, trace_func=lambda x: None) if \
                 model_params["early_stopping_online"] else None
 
         # update periods
@@ -529,31 +591,6 @@ if params.online_end_of_validation_path is None:
             bnn.fit(train_loader, optim, n_epochs_online, 
                 device=DEVICE, callback=callback)
 
-        # for epoch in range(n_epochs_online):
-
-        #     with tyxe.poutine.local_reparameterization():
-        #         bnn.fit(train_loader, optim, 1, 
-        #             device=DEVICE, callback=callback)
-
-        #     err, log_likelihood = torch.tensor([
-        #         bnn.evaluate(x.to(DEVICE), y.to(DEVICE), 
-        #         num_predictions=model_params["test_samples"]
-        #             ) for x, y in test_loader]
-        #         ).sum(dim = 0)
-        #     mean_error =  err.item() / len(test_loader.sampler)
-        #     val_dict[f"{val_period}-test_err"].append(mean_error)
-        #     mean_nll = - log_likelihood.item() / len(test_loader.sampler)
-        #     val_dict[f"{val_period}-test_nll"].append(mean_nll)
-        #     early_stopping(mean_nll, bnn)
-
-        #     # update pbar with validation results
-        #     postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
-        #     pbar.set_postfix(postfix_dict)
-
-        #     if early_stopping.early_stop:
-        #         break
-
-
         # if early stopping is None get validation performance, otherwise it is
         # calculated on callback
         if early_stopping is None:
@@ -564,7 +601,8 @@ if params.online_end_of_validation_path is None:
         
         else:
             val_losses.append(early_stopping.best_score)
-            val_epochs.append(len(val_nlls) - early_stopping.patience)
+            val_epochs.append(len(val_nlls) - (
+                early_stopping.patience * early_stopping.early_stop))
             val_dict[f"{val_period}-test_err"] = val_errors
             val_dict[f"{val_period}-test_nll"] = val_nlls
 
@@ -589,9 +627,15 @@ if params.online_end_of_validation_path is None:
     if early_stopping is None:
         # save model 
         torch.save(bnn.state_dict(), online_checkpoint_path)
+    else:
+        # save validation results which are deemed interesting only if early
+        # stopping is enabled
+        val_dict_path = f"{model_checkpoint_subdir}/val_dict"
+        save_as_json(val_dict, val_dict_path)
 
 else: 
-    bnn = load_bnn(model_params, inference, train_params, params.online_end_of_validation_path)
+    bnn = load_bnn(model_params, inference, train_params,
+        params.online_end_of_validation_path)
 
 
 # In[ ]:
@@ -623,7 +667,7 @@ if test_online:
 
         # find the good number of epochs
         early_stopping = EarlyStopping(
-            delta=1e-4, path=online_checkpoint_path) if \
+            delta=1e-4, path=online_checkpoint_path, trace_func=lambda x: None) if \
                 model_params["early_stopping_online"] else None
 
         # update periods
@@ -705,13 +749,6 @@ if test_online:
 # In[ ]:
 
 
-bnn = load_bnn(model_params, inference, train_params, 
-"../model/MF/mean-field/version_28/online_state_dict.pt")
-
-
-# In[ ]:
-
-
 if params.early_stopping_online:
     # select the number of epochs for online test from validation
     n_epochs_online = int(pd.Series(val_epochs).median())
@@ -734,6 +771,19 @@ else:
 test_dict = defaultdict(lambda: [])
 
 for i, test_period in enumerate(test_periods, 1):
+
+    # initialize variational distribution randomly
+    if params.random_init:
+        new_bnn = get_bnn(model_params,inference)
+
+        # use last model approx. posterior as prior 
+        if params.update_prior:
+            new_bnn.update_prior(tyxe.priors.DictPrior(
+                bnn.net_guide.get_detached_distributions(
+                    tyxe.util.pyro_sample_sites(bnn.net))))
+                    
+        bnn = new_bnn
+        gc.collect()
 
 
     # update periods
@@ -796,4 +846,10 @@ if train_params["save_result"]:
     pd.concat((res_df, average_srs.to_frame().T), axis=0, ignore_index=True
     ).to_csv(df_path, index=False)
     print(f"saved results csv at: {os.path.abspath(df_path)}")
+
+
+# In[ ]:
+
+
+bnn.prior
 
