@@ -10,3 +10,7 @@ img
 notebooks/data/mnist/MNIST/*
 notebooks/data/mnist/MNIST/*
 .vscode/settings.json
+jobs/*/*.e*
+jobs/*/*.o*
+jobs/*/*.po*
+jobs/*/*.pe*

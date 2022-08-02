@@ -10,8 +10,8 @@
 # In[ ]:
 
 
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
+#get_ipython().run_line_magic('load_ext', 'autoreload')
+#get_ipython().run_line_magic('autoreload', '2')
 
 import argparse
 import copy
@@ -54,9 +54,9 @@ parser.add_argument(
 parser.add_argument(
     "--seed", default="6202", help="random seed for reproducibility")
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
-parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
-# parsed_args = parser.parse_args([])
-parsed_args
+# parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
+parsed_args = parser.parse_args()
+print(parsed_args)
 
 
 # In[ ]:
@@ -250,7 +250,7 @@ def load_bnn(model_params, inference, train_params, path):
 # In[ ]:
 
 
-DEVICE
+print(DEVICE)
 
 
 # # Parameters
@@ -286,8 +286,8 @@ model_params = dict(
     l2_regularization_constant=1e-6,
     learning_rate=1e-3,  # 1e-2 is the ASMG MF implementation
     batch_size=1024,
-    n_epochs_offline=1,#30, # 11,
-    n_epochs_online=1,#100,  # 19,
+    n_epochs_offline=30, # 11,
+    n_epochs_online=5,  # 19,
     early_stopping_offline=True,
     early_stopping_online=True, # train_params["test_start_period"] is None,
     update_prior=True,
