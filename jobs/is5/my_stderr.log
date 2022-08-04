@@ -1,0 +1,16 @@
+WARNING: If you use conda to create environments, your home directory may fill up. Please see our documentation at 
+ https://www.wiki.ed.ac.uk/display/ResearchServices/Anaconda for advice.
+  0%|          | 0/30 [00:00<?, ?Epochs/s, Epoch Loss: inf]/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")
+/exports/eddie/scratch/s2110626/anaconda/envs/tyxe/lib/python3.8/site-packages/pyro/infer/trace_elbo.py:138: UserWarning: Encountered NaN: loss
+  warn_if_nan(loss, "loss")

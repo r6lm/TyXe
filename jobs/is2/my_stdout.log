@@ -24,3 +24,38 @@ saving json at: ./../model/MF/mean-field/version_16/params.json
 OFFLINE TRAINING
 train period: 1-10
 validation period: 11
+CUDA_VISIBLE_DEVICES: 2
+Namespace(init_scale='1e-2', seed='6002')
+cuda
+saving json at: ./../model/MF/mean-field/version_22/params.json
+OFFLINE TRAINING
+train period: 1-10
+validation period: 11
+CUDA_VISIBLE_DEVICES: 2
+Namespace(init_scale='1e-2', seed='6002')
+cuda
+saving json at: ./../model/MF/mean-field/version_23/params.json
+OFFLINE TRAINING
+train period: 1-10
+validation period: 11
+CUDA_VISIBLE_DEVICES: 3
+Namespace(init_scale='1e-2', seed='6202')
+cuda
+saving json at: ./../model/MF/mean-field/version_26/params.json
+OFFLINE TRAINING
+train period: 1-10
+validation period: 11
+CUDA_VISIBLE_DEVICES: 0
+Namespace(init_scale='1e-2', seed='6202')
+cuda
+saving json at: ./../model/MF/mean-field/version_27/params.json
+OFFLINE TRAINING
+train period: 1-10
+validation period: 11
+CUDA_VISIBLE_DEVICES: 0,1
+Namespace(init_scale='1e-1', seed='6202')
+cuda
+saving json at: ./../model/MF/mean-field/version_29/params.json
+OFFLINE TRAINING
+train period: 1-10
+validation period: 11
