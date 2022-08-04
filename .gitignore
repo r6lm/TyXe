@@ -14,3 +14,4 @@ jobs/*/*.e*
 jobs/*/*.o*
 jobs/*/*.po*
 jobs/*/*.pe*
+notebooks/data/movielens/processed/ml_processed.csv

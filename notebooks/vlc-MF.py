@@ -4,16 +4,33 @@
 # In[ ]:
 
 
-# NOTE: currently I only perform validations loops at the end of each epoch is early stopping is enabled.
+# NOTE: currently I only perform validations loops at the end of each epoch if early stopping is enabled.
+# NOTE: when transformed to python script magics and parse args 
 
 
 # In[ ]:
 
 
-#get_ipython().run_line_magic('load_ext', 'autoreload')
-#get_ipython().run_line_magic('autoreload', '2')
-
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
 import argparse
+
+# parameters to tune on Eddie
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--init-scale", default="1e-4", help="guide factory initial parameter scale")
+parser.add_argument(
+    "--seed", default="6202", help="random seed for reproducibility")
+# parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
+
+# parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
+parsed_args = parser.parse_args()
+parsed_args
+
+
+# In[ ]:
+
+
 import copy
 import functools
 import os
@@ -44,23 +61,9 @@ from utils.save import get_version, save_as_json
 from pytorchtools import EarlyStopping
 
 
-# In[ ]:
-
-
-# parameters to tune on Eddie
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--init-scale", default="1e-4", help="guide factory initial parameter scale")
-parser.add_argument(
-    "--seed", default="6202", help="random seed for reproducibility")
-# parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
-# parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
-parsed_args = parser.parse_args()
-print(parsed_args)
-
+# # Parameters
 
 # In[ ]:
-
 
 
 # tyxe global parameters
@@ -70,6 +73,91 @@ DEVICE = torch.device("cuda") if USE_CUDA else torch.device("cpu")
 C10_MEAN = (0.49139968, 0.48215841, 0.44653091)
 C10_SD = (0.24703223, 0.24348513, 0.26158784)
 inference = "mean-field"
+DEVICE
+
+
+# In[ ]:
+
+
+# control flow parameters
+test_offline = False
+test_online = False
+plot_perf = False
+fast_dev_run = True
+
+train_params = dict(
+    input_path="data/movielens/processed/ml_processed.csv",
+    val_start_period=11,
+    val_end_period= 24,  #12
+    test_start_period=25, # change to None if running as validation
+    test_end_period=31,  # 25,
+    train_window=10,
+    seed=int(parsed_args.seed),
+    model_filename='first_mf',
+    offline_path=None,#"../model/MF/mean-field/version_29/offline_state_dict.pt",
+    online_end_of_validation_path=None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
+    # save_model=False, \todo
+    save_result=True
+)
+
+model_params = dict(
+    alias="MF",
+    n_users=43183,
+    n_items=51149,
+    n_latents=8,
+    l2_regularization_constant=1e-6,
+    learning_rate=1e-3,  # 1e-2 is the ASMG MF implementation
+    batch_size=1024,
+    n_epochs_offline=30, # 11,
+    n_epochs_online=40,  # 19,
+    early_stopping_offline=True,
+    early_stopping_online=True, # train_params["test_start_period"] is None,
+    update_prior=True,
+    random_init=True,
+    test_samples=40,
+    guide_init_scale=float(parsed_args.init_scale)
+)
+
+# train_batch_size = 1024
+# test_batch_size = 1000
+train_params["model_checkpoint_dir"] = f'./../model/{model_params["alias"]}'
+
+if fast_dev_run:
+    model_params["n_epochs_offline"] = 1
+    model_params["n_epochs_online"] = 1
+    model_params["save_result"] = False
+
+
+# adapt function to TyXe experiment 
+get_version = functools.partial(get_version, logdir=inference)
+experiment_params = {**train_params, **model_params}
+params = argparse.Namespace(**experiment_params)
+params.guide_init_scale, params.seed
+
+
+# In[ ]:
+
+
+# get version
+version = get_version(train_params["model_checkpoint_dir"])
+
+# make checkpoint dir
+model_checkpoint_subdir = train_params["model_checkpoint_dir"] + (
+    f'/{inference}/{version}')
+    
+if not os.path.exists(model_checkpoint_subdir):
+    os.makedirs(model_checkpoint_subdir)
+    
+    # save json 
+    json_path = f"{model_checkpoint_subdir}/params"
+    save_as_json(experiment_params, json_path)
+
+
+# # Custom functions
+
+# In[ ]:
+
+
 
 # script functions
 def validation_loop(model, dataloader, model_samples):
@@ -247,82 +335,34 @@ def load_bnn(model_params, inference, train_params, path):
     return new_bnn
 
 
-# In[ ]:
 
+def dataloader(
+    params, start_period, end_period=None, fast_dev_run=False, shuffle=True):
+    """
+    Returns a dataloader and allows for fast development runs (testing).
 
-print(DEVICE)
+    Parameters
+    ----------
+    params : Namespace
+    start_period : int
+    end_period : int, by default None
+    fast_dev_run : bool, optional
+        by default False
 
+    """
+    # restrict to just one minibatch for development testing
+    dataset = ASMGMovieLens(
+        params.input_path, start_period, end_period)
 
-# # Parameters
+    if fast_dev_run:
+        dataset = random_split(dataset, [model_params[
+        "batch_size"], len(dataset) - model_params["batch_size"]])[0]
 
-# In[ ]:
-
-
-# control flow parameters
-test_offline = False
-test_online = False
-plot_perf = True
-
-train_params = dict(
-    input_path="../../../increcs/data/preprocessed/ml_processed.csv",
-    val_start_period=11,
-    val_end_period= 24,  #12
-    test_start_period=25, # change to None if running as validation
-    test_end_period=31,  # 25,
-    train_window=10,
-    seed=int(parsed_args.seed),
-    model_filename='first_mf',
-    offline_path=None,#"../model/MF/mean-field/version_29/offline_state_dict.pt",
-    online_end_of_validation_path=None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
-    # save_model=False, \todo
-    save_result=True
-)
-
-model_params = dict(
-    alias="MF",
-    n_users=43183,
-    n_items=51149,
-    n_latents=8,
-    l2_regularization_constant=1e-6,
-    learning_rate=1e-3,  # 1e-2 is the ASMG MF implementation
-    batch_size=1024,
-    n_epochs_offline=30, # 11,
-    n_epochs_online=5,  # 19,
-    early_stopping_offline=True,
-    early_stopping_online=True, # train_params["test_start_period"] is None,
-    update_prior=True,
-    random_init=True,
-    test_samples=40,
-    guide_init_scale=float(parsed_args.init_scale)
-)
-
-# train_batch_size = 1024
-# test_batch_size = 1000
-train_params["model_checkpoint_dir"] = f'./../model/{model_params["alias"]}'
-
-# adapt function to TyXe experiment 
-get_version = functools.partial(get_version, logdir=inference)
-experiment_params = {**train_params, **model_params}
-params = argparse.Namespace(**experiment_params)
-params.guide_init_scale, params.seed
-
-
-# In[ ]:
-
-
-# get version
-version = get_version(train_params["model_checkpoint_dir"])
-
-# make checkpoint dir
-model_checkpoint_subdir = train_params["model_checkpoint_dir"] + (
-    f'/{inference}/{version}')
-    
-if not os.path.exists(model_checkpoint_subdir):
-    os.makedirs(model_checkpoint_subdir)
-    
-    # save json 
-    json_path = f"{model_checkpoint_subdir}/params"
-    save_as_json(experiment_params, json_path)
+    dataloader_ = DataLoader(
+        dataset, batch_size=params.batch_size, shuffle=shuffle,
+        num_workers=os.cpu_count(), pin_memory=USE_CUDA)
+            
+    return dataloader_
 
 
 # # Offline training
@@ -349,16 +389,10 @@ if train_params["offline_path"] is None:
         f"train period: {train_start_period}-{train_end_period}", 
         f"validation period: {val_period}", sep="\n")
 
-    train_data = ASMGMovieLens(
-            train_params["input_path"], train_start_period, train_end_period)
-    train_loader = DataLoader(
-            train_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count(), pin_memory=USE_CUDA)
-
-    test_data = ASMGMovieLens(train_params["input_path"], val_period)
-    test_loader = DataLoader(
-        test_data, batch_size=model_params["batch_size"], shuffle=False,
-        num_workers=os.cpu_count())
+    # get dataloaders
+    train_loader = dataloader(params, train_start_period, train_end_period,
+        fast_dev_run=fast_dev_run)
+    test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run)
 
     # initialize fit auxiliary variables
     n_epochs_offline = model_params["n_epochs_offline"] 
@@ -410,12 +444,6 @@ if train_params["offline_path"] is None:
 else:
     offline_checkpoint_path = params.offline_path
     bnn = load_bnn(model_params, inference, train_params, params.offline_path)
-
-
-# In[ ]:
-
-
-bnn.prior
 
 
 # In[ ]:
@@ -557,16 +585,21 @@ if params.online_end_of_validation_path is None:
             f"test period: {val_period}", sep="\n")
         
         # set dataloaders
-        train_data = ASMGMovieLens(
-            train_params["input_path"], train_period)
-        train_loader = DataLoader(
-            train_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
-        test_data = ASMGMovieLens(
-            train_params["input_path"], val_period)
-        test_loader = DataLoader(
-            test_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
+        # train_data = ASMGMovieLens(
+        #     train_params["input_path"], train_period)
+        # train_loader = DataLoader(
+        #     train_data, batch_size=model_params["batch_size"], shuffle=True,
+        #     num_workers=os.cpu_count())
+        # test_data = ASMGMovieLens(
+        #     train_params["input_path"], val_period)
+        # test_loader = DataLoader(
+        #     test_data, batch_size=model_params["batch_size"], shuffle=True,
+        #     num_workers=os.cpu_count())
+
+        train_loader = dataloader(params, train_period,
+            fast_dev_run=fast_dev_run)
+        test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run, 
+            shuffle=False)   
 
         # initialize fit auxiliary variables
         bnn.likelihood.dataset_size = len(train_loader.sampler)
@@ -677,16 +710,20 @@ if test_online:
             f"test period: {val_period}", sep="\n")
         
         # set dataloaders
-        train_data = ASMGMovieLens(
-            train_params["input_path"], train_period)
-        train_loader = DataLoader(
-            train_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
-        test_data = ASMGMovieLens(
-            train_params["input_path"], val_period)
-        test_loader = DataLoader(
-            test_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
+        # train_data = ASMGMovieLens(
+        #     train_params["input_path"], train_period)
+        # train_loader = DataLoader(
+        #     train_data, batch_size=model_params["batch_size"], shuffle=True,
+        #     num_workers=os.cpu_count())
+        # test_data = ASMGMovieLens(
+        #     train_params["input_path"], val_period)
+        # test_loader = DataLoader(
+        #     test_data, batch_size=model_params["batch_size"], shuffle=True,
+        #     num_workers=os.cpu_count())
+        train_loader = dataloader(params, train_period,
+            fast_dev_run=fast_dev_run)
+        test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run, 
+            shuffle=False)   
 
         # initialize fit auxiliary variables
         new_bnn.likelihood.dataset_size = len(train_loader.sampler)
@@ -792,16 +829,21 @@ for i, test_period in enumerate(test_periods, 1):
         f"train period: {train_period}", 
         f"test period: {test_period}", sep="\n")
     
-    train_data = ASMGMovieLens(
-            train_params["input_path"], train_period)
-    train_loader = DataLoader(
-            train_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
-    test_data = ASMGMovieLens(
-            train_params["input_path"], test_period)
-    test_loader = DataLoader(
-            test_data, batch_size=model_params["batch_size"], shuffle=True,
-            num_workers=os.cpu_count())
+    # train_data = ASMGMovieLens(
+    #         train_params["input_path"], train_period)
+    # train_loader = DataLoader(
+    #         train_data, batch_size=model_params["batch_size"], shuffle=True,
+    #         num_workers=os.cpu_count())
+    # test_data = ASMGMovieLens(
+    #         train_params["input_path"], test_period)
+    # test_loader = DataLoader(
+    #         test_data, batch_size=model_params["batch_size"], shuffle=True,
+    #         num_workers=os.cpu_count())
+
+    train_loader = dataloader(params, train_period, 
+        fast_dev_run=fast_dev_run)
+    test_loader = dataloader(params, test_period, fast_dev_run=fast_dev_run, 
+        shuffle=False)   
 
     elbos,postfix_dict, pbar, callback = fit_aux(
                 train_loader, n_epochs_online, None)
