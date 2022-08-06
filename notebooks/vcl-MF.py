@@ -11,20 +11,21 @@
 # In[ ]:
 
 
-# get_ipython().run_line_magic('load_ext', 'autoreload')
-# get_ipython().run_line_magic('autoreload', '2')
+#get_ipython().run_line_magic('load_ext', 'autoreload')
+#get_ipython().run_line_magic('autoreload', '2')
 import argparse
 
 # parameters to tune on Eddie
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--init-scale", default="1e-4", help="guide factory initial parameter scale")
+    "--init-scale", default="1e-2", help="guide factory initial parameter scale")
 parser.add_argument(
     "--seed", default="6202", help="random seed for reproducibility")
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
 
 # parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
 parsed_args = parser.parse_args()
+# parsed_args = parser.parse_args()
 parsed_args
 
 
@@ -80,6 +81,7 @@ DEVICE
 
 
 # control flow parameters
+validation_config = True
 test_offline = False
 test_online = False
 plot_perf = False
@@ -127,12 +129,26 @@ if fast_dev_run:
     model_params["n_epochs_online"] = 1
     model_params["save_result"] = False
 
+if validation_config:
+    train_params.update(dict(
+        val_start_period=11,
+        val_end_period= 20,
+        test_start_period=21, 
+        test_end_period=24, 
+    ))
+
 
 # adapt function to TyXe experiment 
 get_version = functools.partial(get_version, logdir=inference)
 experiment_params = {**train_params, **model_params}
 params = argparse.Namespace(**experiment_params)
 params.guide_init_scale, params.seed
+
+
+# In[ ]:
+
+
+train_params
 
 
 # In[ ]:
@@ -584,17 +600,6 @@ if params.online_end_of_validation_path is None:
             f"train period: {train_period}", 
             f"test period: {val_period}", sep="\n")
         
-        # set dataloaders
-        # train_data = ASMGMovieLens(
-        #     train_params["input_path"], train_period)
-        # train_loader = DataLoader(
-        #     train_data, batch_size=model_params["batch_size"], shuffle=True,
-        #     num_workers=os.cpu_count())
-        # test_data = ASMGMovieLens(
-        #     train_params["input_path"], val_period)
-        # test_loader = DataLoader(
-        #     test_data, batch_size=model_params["batch_size"], shuffle=True,
-        #     num_workers=os.cpu_count())
 
         train_loader = dataloader(params, train_period,
             fast_dev_run=fast_dev_run)
@@ -709,17 +714,6 @@ if test_online:
             f"train period: {train_period}", 
             f"test period: {val_period}", sep="\n")
         
-        # set dataloaders
-        # train_data = ASMGMovieLens(
-        #     train_params["input_path"], train_period)
-        # train_loader = DataLoader(
-        #     train_data, batch_size=model_params["batch_size"], shuffle=True,
-        #     num_workers=os.cpu_count())
-        # test_data = ASMGMovieLens(
-        #     train_params["input_path"], val_period)
-        # test_loader = DataLoader(
-        #     test_data, batch_size=model_params["batch_size"], shuffle=True,
-        #     num_workers=os.cpu_count())
         train_loader = dataloader(params, train_period,
             fast_dev_run=fast_dev_run)
         test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run, 
@@ -828,17 +822,6 @@ for i, test_period in enumerate(test_periods, 1):
     print(
         f"train period: {train_period}", 
         f"test period: {test_period}", sep="\n")
-    
-    # train_data = ASMGMovieLens(
-    #         train_params["input_path"], train_period)
-    # train_loader = DataLoader(
-    #         train_data, batch_size=model_params["batch_size"], shuffle=True,
-    #         num_workers=os.cpu_count())
-    # test_data = ASMGMovieLens(
-    #         train_params["input_path"], test_period)
-    # test_loader = DataLoader(
-    #         test_data, batch_size=model_params["batch_size"], shuffle=True,
-    #         num_workers=os.cpu_count())
 
     train_loader = dataloader(params, train_period, 
         fast_dev_run=fast_dev_run)
