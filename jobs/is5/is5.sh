@@ -22,4 +22,4 @@ source activate tyxe
 
 # Run the program
 cd /exports/eddie/scratch/s2110626/diss/others/TyXe/notebooks
-python -u ./vlc-MF.py --init-scale 1e-55555
+python -u ./vcl-MF.py --init-scale 1e-55555

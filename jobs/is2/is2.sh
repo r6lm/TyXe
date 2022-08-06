@@ -19,4 +19,4 @@ source activate tyxe
 
 # Run the program
 cd /home/s2110626/diss/TyXe/notebooks 
-python -u ./vlc-MF.py --init-scale 1e-1 
+python -u ./vcl-MF.py --init-scale 1e-1 
