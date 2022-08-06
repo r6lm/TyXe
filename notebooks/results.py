@@ -51,8 +51,9 @@ for json_path in json_paths:
         if i % 2 == 0:
             best_epochs.append(len(perf_list) - 7)
     plt.plot(range(12, 25), best_epochs, label=version_name)
-    # plt.title(version_name)
+    n_epochs_dict[version_name] = best_epochs 
 
+print(n_epochs_dict)
 plt.legend()
-plt.savefig("../img/n-epoch-val.pdf", bbox_inches="tight")
+plt.savefig("../img/n-epoch-val.svg", bbox_inches="tight")
 

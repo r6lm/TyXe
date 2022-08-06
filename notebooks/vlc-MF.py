@@ -83,7 +83,7 @@ DEVICE
 test_offline = False
 test_online = False
 plot_perf = False
-fast_dev_run = True
+fast_dev_run = False
 
 train_params = dict(
     input_path="data/movielens/processed/ml_processed.csv",
