@@ -11,8 +11,8 @@
 # In[2]:
 
 
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
+#get_ipython().run_line_magic('load_ext', 'autoreload')
+#get_ipython().run_line_magic('autoreload', '2')
 import argparse
 
 # parameters to tune on Eddie
@@ -24,8 +24,8 @@ parser.add_argument(
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
 
 # parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
-parsed_args = parser.parse_args([])
-# parsed_args = parser.parse_args()
+# parsed_args = parser.parse_args([])
+parsed_args = parser.parse_args()
 parsed_args
 
 
@@ -84,11 +84,11 @@ DEVICE
 
 
 # control flow parameters
-validation_config = True
+validation_config = False
 test_offline = False
 test_online = False
 plot_perf = False
-fast_dev_run = True
+fast_dev_run = False
 
 train_params = dict(
     input_path="data/movielens/processed/ml_processed.csv",
