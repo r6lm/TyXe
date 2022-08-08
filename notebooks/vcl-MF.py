@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 
 # NOTE: currently I only perform validations loops at the end of each epoch if early stopping is enabled.
 # NOTE: when transformed to python script magics and parse args 
 
 
-# In[ ]:
+# In[2]:
 
 
-#get_ipython().run_line_magic('load_ext', 'autoreload')
-#get_ipython().run_line_magic('autoreload', '2')
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
 import argparse
 
 # parameters to tune on Eddie
@@ -24,12 +24,12 @@ parser.add_argument(
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
 
 # parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
-parsed_args = parser.parse_args()
+parsed_args = parser.parse_args([])
 # parsed_args = parser.parse_args()
 parsed_args
 
 
-# In[ ]:
+# In[3]:
 
 
 import copy
@@ -42,11 +42,13 @@ import gc
 
 from tqdm import tqdm
 from collections import defaultdict
+from time import time
 
 import torch
 import torch.nn as nn
 import torch.utils.data as data
 from torch.utils.data import DataLoader, random_split
+from sklearn.metrics import roc_auc_score
 
 # import torchvision.transforms as tf
 # from torchvision.datasets import MNIST, CIFAR10, CIFAR100
@@ -58,13 +60,14 @@ import tyxe
 
 from MF.model import get_model
 from dataset.ASMGMovieLens import ASMGMovieLens
-from utils.save import get_version, save_as_json
+from utils.save import (get_version, save_as_json, append_json_array, 
+    load_json_array)
 from pytorchtools import EarlyStopping
 
 
 # # Parameters
 
-# In[ ]:
+# In[4]:
 
 
 # tyxe global parameters
@@ -77,7 +80,7 @@ inference = "mean-field"
 DEVICE
 
 
-# In[ ]:
+# In[5]:
 
 
 # control flow parameters
@@ -85,7 +88,7 @@ validation_config = True
 test_offline = False
 test_online = False
 plot_perf = False
-fast_dev_run = False
+fast_dev_run = True
 
 train_params = dict(
     input_path="data/movielens/processed/ml_processed.csv",
@@ -120,8 +123,7 @@ model_params = dict(
     guide_init_scale=float(parsed_args.init_scale)
 )
 
-# train_batch_size = 1024
-# test_batch_size = 1000
+
 train_params["model_checkpoint_dir"] = f'./../model/{model_params["alias"]}'
 
 if fast_dev_run:
@@ -132,10 +134,15 @@ if fast_dev_run:
 if validation_config:
     train_params.update(dict(
         val_start_period=11,
-        val_end_period= 20,
+        val_end_period=20,
         test_start_period=21, 
         test_end_period=24, 
+        # offline_path="../model/MF/mean-field/version_29/offline_state_dict.pt",
+        # online_end_of_validation_path="../model/MF/mean-field/version_29/online_state_dict.pt",
     ))
+    # model_params.update(dict(
+    #     n_epochs_online=18
+    # ))
 
 
 # adapt function to TyXe experiment 
@@ -145,13 +152,7 @@ params = argparse.Namespace(**experiment_params)
 params.guide_init_scale, params.seed
 
 
-# In[ ]:
-
-
-train_params
-
-
-# In[ ]:
+# In[6]:
 
 
 # get version
@@ -171,8 +172,7 @@ if not os.path.exists(model_checkpoint_subdir):
 
 # # Custom functions
 
-# In[ ]:
-
+# In[7]:
 
 
 # script functions
@@ -197,13 +197,36 @@ def validation_loop(model, dataloader, model_samples):
 
     return mean_nll, mean_error
 
-def fit_aux(train_loader, n_epochs, 
-    early_stopper, **kwargs):
+def auc(bnn, params, y_true, test_loader):
+    """
+    Uses scikit-learn roc_auc_score.
 
-    # # veryfy callback_type
-    # implemented_callbacks = ("reporting", "early-stopping")
-    # assert callback_type in implemented_callbacks, (
-    #     f"`callback_type` must be in {implemented_callbacks}")
+    Parameters
+    ----------
+    bnn 
+    params 
+    y_true : torch.Tensor
+    test_loader : Dataloader
+        `shuffle` parameter must be False. Order has to be the same than
+        in `` 
+
+    Returns
+    -------
+    float
+    """    
+    preds = torch.ones_like(y_true) * -1
+
+    for i, (x, _) in enumerate(test_loader):
+        preds[
+            i * params.batch_size:min((i + 1) * params.batch_size, len(y_true))
+        ] = bnn.predict(x.to(DEVICE), num_predictions=params.test_samples)
+
+    assert torch.all(preds != -1), "Not all values replaced for predictions."
+
+    return roc_auc_score(y_true, preds)
+
+
+def fit_aux(train_loader, n_epochs, early_stopper, **kwargs):
 
     elbos = []
     postfix_dict = {"Epoch Loss": np.Inf}
@@ -325,10 +348,10 @@ def load_bnn(model_params, inference, train_params, path):
     # load data and create a single mini-batch dataloader
     train_data = ASMGMovieLens(train_params["input_path"], 1)
     single_mbatch_data = random_split(train_data, [model_params[
-        "batch_size"], len(train_data) - model_params["batch_size"]])[0]
+        "batch_size"], len(train_data) - params.batch_size])[0]
     singleton_loader = DataLoader(
-        single_mbatch_data, batch_size=model_params["batch_size"])
-    new_bnn.likelihood.dataset_size = model_params["batch_size"]
+        single_mbatch_data, batch_size=params.batch_size)
+    new_bnn.likelihood.dataset_size = params.batch_size
 
     # define optimizer
     optim = pyro.optim.Adam({"lr": model_params["learning_rate"], 
@@ -351,9 +374,9 @@ def load_bnn(model_params, inference, train_params, path):
     return new_bnn
 
 
-
 def dataloader(
-    params, start_period, end_period=None, fast_dev_run=False, shuffle=True):
+    params, start_period, end_period=None, fast_dev_run=False, shuffle=True, 
+    return_y=False):
     """
     Returns a dataloader and allows for fast development runs (testing).
 
@@ -364,26 +387,36 @@ def dataloader(
     end_period : int, by default None
     fast_dev_run : bool, optional
         by default False
+    return_y: bool
+        return y_true for prediction.
 
     """
     # restrict to just one minibatch for development testing
     dataset = ASMGMovieLens(
         params.input_path, start_period, end_period)
+    y_true = dataset.y
 
     if fast_dev_run:
-        dataset = random_split(dataset, [model_params[
-        "batch_size"], len(dataset) - model_params["batch_size"]])[0]
+
+        if return_y:
+            y_true = dataset.y[:params.batch_size]
+
+        dataset = random_split(dataset, [
+            params.batch_size, len(dataset) - params.batch_size])[0]
 
     dataloader_ = DataLoader(
         dataset, batch_size=params.batch_size, shuffle=shuffle,
         num_workers=os.cpu_count(), pin_memory=USE_CUDA)
-            
-    return dataloader_
+    
+    if return_y:
+        return dataloader_, y_true
+    else:
+        return dataloader_
 
 
 # # Offline training
 
-# In[ ]:
+# In[8]:
 
 
 # if there is no saved premodel
@@ -462,7 +495,7 @@ else:
     bnn = load_bnn(model_params, inference, train_params, params.offline_path)
 
 
-# In[ ]:
+# In[9]:
 
 
 if test_offline:
@@ -477,7 +510,7 @@ if test_offline:
     print(f"{test_mean_nll:.5f}")
 
 
-# In[ ]:
+# In[10]:
 
 
 if test_offline:
@@ -496,10 +529,10 @@ if test_offline:
     assert new_mean_nll == test_mean_nll
 
 
-# In[ ]:
+# In[11]:
 
 
-if params.save_result:
+if params.save_result and (params.offline_path is None):
 
     # save train performance statistics  
     train_perf_path = f"{model_checkpoint_subdir}/train_perf.csv"
@@ -516,7 +549,7 @@ if params.save_result:
     print(f"saving train performance statistics at: {os.path.abspath(train_perf_path)}")
 
 
-# In[ ]:
+# In[12]:
 
 
 if plot_perf and (params.offline_path is None):
@@ -550,7 +583,7 @@ if plot_perf and (params.offline_path is None):
 
 # # Online training
 
-# In[ ]:
+# In[13]:
 
 
 if params.online_end_of_validation_path is None:
@@ -676,7 +709,7 @@ else:
         params.online_end_of_validation_path)
 
 
-# In[ ]:
+# In[14]:
 
 
 if test_online:
@@ -777,16 +810,33 @@ if test_online:
 
 # # Online test
 
-# In[ ]:
+# In[15]:
 
 
 if params.early_stopping_online:
     # select the number of epochs for online test from validation
-    n_epochs_online = int(pd.Series(val_epochs).median())
-    print(f"optimal online epochs: {n_epochs_online}")
+    if params.online_end_of_validation_path is None:
+        n_epochs_online = int(pd.Series(val_epochs).median())
+        print(f"optimal online epochs: {n_epochs_online}")
+    
+    # if validation model was provided, then use the original
+    else:
+        n_epochs_online = params.n_epochs_online
 
 
-# In[ ]:
+# In[16]:
+
+
+
+
+
+# In[17]:
+
+
+
+
+
+# In[18]:
 
 
 
@@ -805,6 +855,7 @@ for i, test_period in enumerate(test_periods, 1):
 
     # initialize variational distribution randomly
     if params.random_init:
+        
         new_bnn = get_bnn(model_params,inference)
 
         # use last model approx. posterior as prior 
@@ -825,10 +876,10 @@ for i, test_period in enumerate(test_periods, 1):
 
     train_loader = dataloader(params, train_period, 
         fast_dev_run=fast_dev_run)
-    test_loader = dataloader(params, test_period, fast_dev_run=fast_dev_run, 
-        shuffle=False)   
+    test_loader, y_true_test = dataloader(params, test_period, 
+        fast_dev_run=fast_dev_run, shuffle=False, return_y=True)   
 
-    elbos,postfix_dict, pbar, callback = fit_aux(
+    elbos, postfix_dict, pbar, callback = fit_aux(
                 train_loader, n_epochs_online, None)
 
     bnn.likelihood.dataset_size = len(train_loader.sampler)
@@ -837,14 +888,18 @@ for i, test_period in enumerate(test_periods, 1):
 
 
     # for epoch in range(n_epochs_online):
-
+    start_time = time()
     with tyxe.poutine.local_reparameterization():
         bnn.fit(train_loader, optim, n_epochs_online, 
             device=DEVICE, callback=callback)
+    trainig_time = time() - start_time
 
     mean_nll, mean_error = validation_loop(
         bnn, test_loader, model_params["test_samples"])
-    postfix_dict["Val Loss"] = f"{mean_nll:.5f}"
+    postfix_dict["Test Loss"] = f"{mean_nll:.5f}"
+    pbar.set_postfix(postfix_dict)
+    auc_test = auc(bnn, params, y_true_test, test_loader)
+    postfix_dict["Test AUC"] = f"{auc_test:.5f}"
     pbar.set_postfix(postfix_dict)
 
     pbar.close()
@@ -852,20 +907,21 @@ for i, test_period in enumerate(test_periods, 1):
     test_dict["period"].append(test_period)
     test_dict["loss"].append(mean_nll)
     test_dict["error"].append(mean_error)
+    test_dict["auc"].append(auc_test)
+    test_dict["train_time"].append(trainig_time)
 
     if (inference == "mean-field") and params.update_prior:
         bnn.update_prior(tyxe.priors.DictPrior(bnn.net_guide.get_detached_distributions(
             tyxe.util.pyro_sample_sites(bnn.net))))
 
 
-# In[ ]:
+# In[19]:
 
 
 df_path = f"{model_checkpoint_subdir}/first_biu.csv"
 res_df = pd.DataFrame(test_dict)
 average_srs = res_df.mean()
 average_srs.at["period"] = "mean"
-print(average_srs)
 
 if train_params["save_result"]: 
     pd.concat((res_df, average_srs.to_frame().T), axis=0, ignore_index=True
@@ -873,8 +929,30 @@ if train_params["save_result"]:
     print(f"saved results csv at: {os.path.abspath(df_path)}")
 
 
-# In[ ]:
+# In[20]:
 
 
-bnn.prior
+# save summary results at two levels above the checkpoint path
+results_master_path = model_checkpoint_subdir[
+    : model_checkpoint_subdir.rfind("/", 0, model_checkpoint_subdir.rfind("/"))
+    ] + "/results.json"
+
+
+# In[25]:
+
+
+# concatenate summary results and script args
+res_dict = average_srs.to_dict()
+res_dict.update(**vars(parsed_args), **{
+    "n_epochs_on_test": n_epochs_online,
+    "version": version
+    })
+print(res_dict)
+append_json_array(res_dict, results_master_path)
+
+
+# In[24]:
+
+
+load_json_array(results_master_path)
 
