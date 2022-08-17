@@ -7,6 +7,7 @@ for ABLATION in $(seq 0 3); do
     for RUN in $(seq 1 5); do
         cd s$RUN
         qsub s$RUN.sh
-        cd ..
+        cd ..        
     done
+    cd ..
 done
