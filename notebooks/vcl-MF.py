@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 # NOTE: currently I only perform validations loops at the end of each epoch if early stopping is enabled.
 # NOTE: when transformed to python script magics and parse args 
 
 
-# In[2]:
+# In[ ]:
 
 
-#get_ipython().run_line_magic('load_ext', 'autoreload')
-#get_ipython().run_line_magic('autoreload', '2')
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
 import argparse
 
 # parameters to tune on Eddie
@@ -29,7 +29,17 @@ parsed_args = parser.parse_args()
 parsed_args
 
 
-# In[3]:
+# In[ ]:
+
+
+validation_config = False
+test_offline = False
+test_online = False
+plot_perf = False
+fast_dev_run = False
+
+
+# In[ ]:
 
 
 import copy
@@ -67,7 +77,7 @@ from pytorchtools import EarlyStopping
 
 # # Parameters
 
-# In[4]:
+# In[ ]:
 
 
 # tyxe global parameters
@@ -80,16 +90,10 @@ inference = "mean-field"
 DEVICE
 
 
-# In[5]:
+# In[ ]:
 
 
 # control flow parameters
-validation_config = False
-test_offline = False
-test_online = False
-plot_perf = False
-fast_dev_run = False
-
 train_params = dict(
     input_path="data/movielens/processed/ml_processed.csv",
     val_start_period=11,
@@ -99,10 +103,11 @@ train_params = dict(
     train_window=10,
     seed=int(parsed_args.seed),
     model_filename='first_mf',
-    offline_path=None,#"../model/MF/mean-field/version_29/offline_state_dict.pt",
+    offline_path=None,  #"../model/MF/mean-field/version_29/offline_state_dict.pt",
     online_end_of_validation_path=None,  # "../model/MF/mean-field/version_14/online_state_dict.pt",
     # save_model=False, \todo
-    save_result=True
+    save_result=True,
+    save_preds = True,
 )
 
 model_params = dict(
@@ -118,7 +123,7 @@ model_params = dict(
     early_stopping_offline=True,
     early_stopping_online=True, # train_params["test_start_period"] is None,
     update_prior=True,
-    random_init=True,
+    random_init=False,
     test_samples=40,
     guide_init_scale=float(parsed_args.init_scale)
 )
@@ -152,7 +157,7 @@ params = argparse.Namespace(**experiment_params)
 params.guide_init_scale, params.seed
 
 
-# In[6]:
+# In[ ]:
 
 
 # get version
@@ -172,7 +177,7 @@ if not os.path.exists(model_checkpoint_subdir):
 
 # # Custom functions
 
-# In[7]:
+# In[ ]:
 
 
 # script functions
@@ -197,7 +202,7 @@ def validation_loop(model, dataloader, model_samples):
 
     return mean_nll, mean_error
 
-def auc(bnn, params, y_true, test_loader):
+def auc(bnn, params, y_true, test_loader, prediction_dst=None):
     """
     Uses scikit-learn roc_auc_score.
 
@@ -207,8 +212,8 @@ def auc(bnn, params, y_true, test_loader):
     params 
     y_true : torch.Tensor
     test_loader : Dataloader
-        `shuffle` parameter must be False. Order has to be the same than
-        in `` 
+    prediction_dst : str or os.PathLike
+        where predictions are saved.
 
     Returns
     -------
@@ -222,6 +227,9 @@ def auc(bnn, params, y_true, test_loader):
         ] = bnn.predict(x.to(DEVICE), num_predictions=params.test_samples)
 
     assert torch.all(preds != -1), "Not all values replaced for predictions."
+
+    if prediction_dst is not None:
+        torch.save(preds, prediction_dst)
 
     return roc_auc_score(y_true, preds)
 
@@ -416,7 +424,7 @@ def dataloader(
 
 # # Offline training
 
-# In[8]:
+# In[ ]:
 
 
 # if there is no saved premodel
@@ -495,7 +503,7 @@ else:
     bnn = load_bnn(model_params, inference, train_params, params.offline_path)
 
 
-# In[9]:
+# In[ ]:
 
 
 if test_offline:
@@ -510,7 +518,7 @@ if test_offline:
     print(f"{test_mean_nll:.5f}")
 
 
-# In[10]:
+# In[ ]:
 
 
 if test_offline:
@@ -529,7 +537,7 @@ if test_offline:
     assert new_mean_nll == test_mean_nll
 
 
-# In[11]:
+# In[ ]:
 
 
 if params.save_result and (params.offline_path is None):
@@ -549,7 +557,7 @@ if params.save_result and (params.offline_path is None):
     print(f"saving train performance statistics at: {os.path.abspath(train_perf_path)}")
 
 
-# In[12]:
+# In[ ]:
 
 
 if plot_perf and (params.offline_path is None):
@@ -583,7 +591,7 @@ if plot_perf and (params.offline_path is None):
 
 # # Online training
 
-# In[13]:
+# In[ ]:
 
 
 if params.online_end_of_validation_path is None:
@@ -709,7 +717,7 @@ else:
         params.online_end_of_validation_path)
 
 
-# In[14]:
+# In[ ]:
 
 
 if test_online:
@@ -810,7 +818,7 @@ if test_online:
 
 # # Online test
 
-# In[15]:
+# In[ ]:
 
 
 if params.early_stopping_online:
@@ -824,19 +832,7 @@ if params.early_stopping_online:
         n_epochs_online = params.n_epochs_online
 
 
-# In[16]:
-
-
-
-
-
-# In[17]:
-
-
-
-
-
-# In[18]:
+# In[ ]:
 
 
 
@@ -894,11 +890,19 @@ for i, test_period in enumerate(test_periods, 1):
             device=DEVICE, callback=callback)
     trainig_time = time() - start_time
 
+    # get validation loss
     mean_nll, mean_error = validation_loop(
         bnn, test_loader, model_params["test_samples"])
     postfix_dict["Test Loss"] = f"{mean_nll:.5f}"
     pbar.set_postfix(postfix_dict)
-    auc_test = auc(bnn, params, y_true_test, test_loader)
+
+    # get test AUC and save predictions
+    predictions_dir = f"{model_checkpoint_subdir}/T{test_period}"
+    if params.save_preds and (not os.path.exists(predictions_dir)):
+        os.makedirs(predictions_dir)
+    predictions_path = f'{predictions_dir}/preds-s{params.seed}.pt'
+    auc_test = auc(bnn, params, y_true_test, test_loader, 
+        prediction_dst=(predictions_path if params.save_preds else None))
     postfix_dict["Test AUC"] = f"{auc_test:.5f}"
     pbar.set_postfix(postfix_dict)
 
@@ -915,7 +919,7 @@ for i, test_period in enumerate(test_periods, 1):
             tyxe.util.pyro_sample_sites(bnn.net))))
 
 
-# In[19]:
+# In[ ]:
 
 
 df_path = f"{model_checkpoint_subdir}/first_biu.csv"
@@ -929,7 +933,7 @@ if train_params["save_result"]:
     print(f"saved results csv at: {os.path.abspath(df_path)}")
 
 
-# In[20]:
+# In[ ]:
 
 
 # save summary results at two levels above the checkpoint path
@@ -938,7 +942,7 @@ results_master_path = model_checkpoint_subdir[
     ] + "/results.json"
 
 
-# In[25]:
+# In[ ]:
 
 
 # concatenate summary results and script args
@@ -951,7 +955,7 @@ print(res_dict)
 append_json_array(res_dict, results_master_path)
 
 
-# In[24]:
+# In[ ]:
 
 
 load_json_array(results_master_path)
