@@ -23,10 +23,15 @@ parser.add_argument(
     "--seed", default="6202", help="random seed for reproducibility")
 parser.add_argument(
     "--val", default=0, help="1 for validation, 0 for test. Default 0")
+parser.add_argument(
+    "-a", "--ablation", default="0", choices=[f"{i}" for i in range(4)], 
+    help=("0: BIU, 1: BIU-iidPrior, 2: BIU-randomInit, 3: "
+    "BIU-iidPrior-randomInit. Default 0"))
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
 
-# parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
+
 # parsed_args = parser.parse_args([])
+# parsed_args = parser.parse_args(["--val", "1"])
 parsed_args = parser.parse_args()
 parsed_args
 
@@ -125,8 +130,8 @@ model_params = dict(
     n_epochs_online=40,  # 19,
     early_stopping_offline=True,
     early_stopping_online=True, # train_params["test_start_period"] is None,
-    update_prior=True,
-    random_init=False,
+    update_prior=parsed_args.ablation in ("0", "2"),
+    random_init=parsed_args.ablation in ("2", "3"),
     test_samples=40,
     guide_init_scale=float(parsed_args.init_scale)
 )
@@ -157,7 +162,7 @@ if validation_config:
 get_version = functools.partial(get_version, logdir=inference)
 experiment_params = {**train_params, **model_params}
 params = argparse.Namespace(**experiment_params)
-params.guide_init_scale, params.seed
+params.guide_init_scale, params.seed, params.update_prior, params.random_init
 
 
 # In[ ]:
