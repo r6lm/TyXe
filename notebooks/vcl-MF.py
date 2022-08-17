@@ -18,9 +18,11 @@ import argparse
 # parameters to tune on Eddie
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--init-scale", default="1e-2", help="guide factory initial parameter scale")
+    "--init-scale", default="1e0", help="guide factory initial parameter scale")
 parser.add_argument(
     "--seed", default="6202", help="random seed for reproducibility")
+parser.add_argument(
+    "--val", default=0, help="1 for validation, 0 for test. Default 0")
 # parser.add_argument("--inference", choices=["mean-field", "ml"], required=True)
 
 # parsed_args = parser.parse_args(["--init-scale", "1e-3", "--seed", "3"])
@@ -32,11 +34,12 @@ parsed_args
 # In[ ]:
 
 
-validation_config = False
+validation_config = bool(parsed_args.val)
 test_offline = False
 test_online = False
 plot_perf = False
 fast_dev_run = False
+run_on_eddie = True
 
 
 # In[ ]:
@@ -384,7 +387,7 @@ def load_bnn(model_params, inference, train_params, path):
 
 def dataloader(
     params, start_period, end_period=None, fast_dev_run=False, shuffle=True, 
-    return_y=False):
+    return_y=False, run_on_eddie=False):
     """
     Returns a dataloader and allows for fast development runs (testing).
 
@@ -414,7 +417,7 @@ def dataloader(
 
     dataloader_ = DataLoader(
         dataset, batch_size=params.batch_size, shuffle=shuffle,
-        num_workers=os.cpu_count(), pin_memory=USE_CUDA)
+        num_workers=0 if run_on_eddie else os.cpu_count(), pin_memory=USE_CUDA)
     
     if return_y:
         return dataloader_, y_true
@@ -448,8 +451,9 @@ if train_params["offline_path"] is None:
 
     # get dataloaders
     train_loader = dataloader(params, train_start_period, train_end_period,
-        fast_dev_run=fast_dev_run)
-    test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run)
+        fast_dev_run=fast_dev_run, run_on_eddie=run_on_eddie)
+    test_loader = dataloader(
+        params, val_period, fast_dev_run=fast_dev_run, run_on_eddie=run_on_eddie)
 
     # initialize fit auxiliary variables
     n_epochs_offline = model_params["n_epochs_offline"] 
@@ -643,9 +647,9 @@ if params.online_end_of_validation_path is None:
         
 
         train_loader = dataloader(params, train_period,
-            fast_dev_run=fast_dev_run)
+            fast_dev_run=fast_dev_run, run_on_eddie=run_on_eddie)
         test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run, 
-            shuffle=False)   
+            shuffle=False, run_on_eddie=run_on_eddie)   
 
         # initialize fit auxiliary variables
         bnn.likelihood.dataset_size = len(train_loader.sampler)
@@ -756,9 +760,9 @@ if test_online:
             f"test period: {val_period}", sep="\n")
         
         train_loader = dataloader(params, train_period,
-            fast_dev_run=fast_dev_run)
+            fast_dev_run=fast_dev_run, run_on_eddie=run_on_eddie)
         test_loader = dataloader(params, val_period, fast_dev_run=fast_dev_run, 
-            shuffle=False)   
+            shuffle=False, run_on_eddie=run_on_eddie)   
 
         # initialize fit auxiliary variables
         new_bnn.likelihood.dataset_size = len(train_loader.sampler)
@@ -871,9 +875,10 @@ for i, test_period in enumerate(test_periods, 1):
         f"test period: {test_period}", sep="\n")
 
     train_loader = dataloader(params, train_period, 
-        fast_dev_run=fast_dev_run)
+        fast_dev_run=fast_dev_run, run_on_eddie=run_on_eddie)
     test_loader, y_true_test = dataloader(params, test_period, 
-        fast_dev_run=fast_dev_run, shuffle=False, return_y=True)   
+        fast_dev_run=fast_dev_run, shuffle=False, return_y=True, 
+        run_on_eddie=run_on_eddie)   
 
     elbos, postfix_dict, pbar, callback = fit_aux(
                 train_loader, n_epochs_online, None)
