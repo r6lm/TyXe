@@ -1,7 +1,0 @@
-CUDA_VISIBLE_DEVICES: 1
-Namespace(init_scale='1e-55555', seed='6202')
-cuda
-saving json at: ./../model/MF/mean-field/version_35/params.json
-OFFLINE TRAINING
-train period: 1-10
-validation period: 11
