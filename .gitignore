@@ -10,10 +10,10 @@ img
 notebooks/data/mnist/MNIST/*
 notebooks/data/mnist/MNIST/*
 .vscode/settings.json
-jobs/*/*.e*
-jobs/*/*.o*
-jobs/*/*.po*
-jobs/*/*.pe*
-jobs/*/my_stderr.log
-jobs/*/my_stdout.log
+jobs/*/*/*.e*
+jobs/*/*/*.o*
+jobs/*/*/*.po*
+jobs/*/*/*.pe*
+jobs/*/*/my_stderr.log
+jobs/*/*/my_stdout.log
 notebooks/data/movielens/processed/ml_processed.csv
