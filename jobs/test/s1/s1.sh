@@ -19,4 +19,4 @@ source activate tyxe
 
 # Run the program
 cd /home/s2110626/diss/TyXe/notebooks 
-python -u ./vcl-MF.py --seed 1
+python -u ./vcl-MF.py --seed 1 -a 2
