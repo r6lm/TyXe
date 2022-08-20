@@ -1,0 +1,69 @@
+{
+    "results": [
+        {
+            "ablation": "2",
+            "auc": 0.722597563101149,
+            "error": 0.33678162482044866,
+            "init_scale": "1e0",
+            "loss": 0.6106579139649008,
+            "n_epochs_on_test": 14,
+            "period": "mean",
+            "seed": "1",
+            "train_time": 64.38601316724505,
+            "val": 0,
+            "version": "version_74"
+        },
+        {
+            "ablation": "2",
+            "auc": 0.7228518761153218,
+            "error": 0.3373823408895388,
+            "init_scale": "1e0",
+            "loss": 0.6119689966099676,
+            "n_epochs_on_test": 17,
+            "period": "mean",
+            "seed": "2",
+            "train_time": 83.6357866014753,
+            "val": 0,
+            "version": "version_73"
+        },
+        {
+            "ablation": "2",
+            "auc": 0.7232766785910124,
+            "error": 0.3375241047032573,
+            "init_scale": "1e0",
+            "loss": 0.6110139620364274,
+            "n_epochs_on_test": 13,
+            "period": "mean",
+            "seed": "3",
+            "train_time": 66.53196781022208,
+            "val": 0,
+            "version": "version_75"
+        },
+        {
+            "ablation": "2",
+            "auc": 0.7233735063884648,
+            "error": 0.3368728974128428,
+            "init_scale": "1e0",
+            "loss": 0.6109289401601349,
+            "n_epochs_on_test": 14,
+            "period": "mean",
+            "seed": "4",
+            "train_time": 61.20199762071882,
+            "val": 0,
+            "version": "version_76"
+        },
+        {
+            "ablation": "2",
+            "auc": 0.7229913927171463,
+            "error": 0.33640164601381517,
+            "init_scale": "1e0",
+            "loss": 0.611054915352762,
+            "n_epochs_on_test": 17,
+            "period": "mean",
+            "seed": "5",
+            "train_time": 72.52724153654916,
+            "val": 0,
+            "version": "version_77"
+        }
+    ]
+}
